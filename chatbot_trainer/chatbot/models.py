@@ -3,7 +3,7 @@ from django.db import models
 class UploadedFile(models.Model):
     course_id = models.IntegerField()
     filename = models.CharField(max_length=255)
-    filetype = models.CharField(max_length=50)
+    filetype = models.CharField(max_length=255)
     filepath = models.CharField(max_length=255)
     request_token = models.IntegerField()
     response_token = models.IntegerField()
