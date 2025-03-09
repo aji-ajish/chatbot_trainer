@@ -14,6 +14,9 @@ from rest_framework import status
 from .models import UploadedFile
 from .serializers import UploadedFileSerializer
 import logging
+from .models import ChatHistory
+from .serializers import ChatHistorySerializer
+
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -185,3 +188,91 @@ def delete_file(request, file_id):
     except Exception as e:
         logger.error(f"Unexpected error while deleting file {file_id}: {str(e)}")
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# Process Query API
+@api_view(['POST'])
+def process_query(request):
+    # Get API Key from request header
+    api_key = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
+    if not api_key:
+        return Response({'detail': 'API key is missing'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Get user_id and course_id
+    user_id = request.data.get('user_id')
+    course_id = request.data.get('course_id')
+    user_query = request.data.get('user_query')
+    print("Received user_id:", user_id)  # Debugging
+    print("Received course_id:", course_id)  # Debugging
+    if not user_id or not course_id or not user_query:
+        return Response({'detail': 'user_id, course_id, and user_query are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Locate the FAISS index directory
+    faiss_dir = f"faiss_index"
+    course_faiss_indexes = [d for d in os.listdir(faiss_dir) if d.startswith(f"{course_id}_")]
+
+    if not course_faiss_indexes:
+        return Response({'detail': 'No training data found for this course'}, status=status.HTTP_404_NOT_FOUND)
+
+    # Load FAISS index (latest)
+    latest_index = sorted(course_faiss_indexes, reverse=True)[0]  # Use the most recent index
+    faiss_index_path = os.path.join(faiss_dir, latest_index)
+
+    try:
+        embeddings = OpenAIEmbeddings(openai_api_key=api_key)
+        faiss_db = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
+
+        # Initialize RetrievalQA
+        llm = ChatOpenAI(openai_api_key=api_key)
+        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=faiss_db.as_retriever())
+
+        # Token count for request
+        enc = tiktoken.encoding_for_model("gpt-4o-mini")
+        request_tokens = len(enc.encode(user_query))
+
+        # Process the query
+        response_text = qa_chain.run(user_query)
+
+        # Token count for response
+        response_tokens = len(enc.encode(response_text))
+
+        # Save chat history
+        chat_entry = ChatHistory.objects.create(
+            user_id=user_id,
+            course_id=course_id,
+            user_query=user_query,
+            response=response_text,
+            req_token=request_tokens,
+            res_token=response_tokens
+        )
+
+        return Response({
+            'user_query': user_query,
+            'response': response_text,
+            'req_token': request_tokens,
+            'res_token': response_tokens,
+            'chat_id': chat_entry.id
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        logger.error(f"Error processing query: {e}")
+        return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# Chat History API
+@api_view(['GET'])
+def chat_history(request):
+    user_id = request.query_params.get('user_id')
+    course_id = request.query_params.get('course_id')
+
+    if not user_id or not course_id:
+        return Response({'detail': 'user_id and course_id are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if user_id == "admin":
+        # Admin: Fetch all chat history for the course
+        chat_entries = ChatHistory.objects.filter(course_id=course_id)
+    else:
+        # Regular user: Fetch only their own chat history
+        chat_entries = ChatHistory.objects.filter(user_id=user_id, course_id=course_id)
+
+    return Response(ChatHistorySerializer(chat_entries, many=True).data, status=status.HTTP_200_OK)
