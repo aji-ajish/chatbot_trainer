@@ -9,4 +9,4 @@ class UploadedFileSerializer(serializers.ModelSerializer):
 class ChatHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatHistory
-        fields = '__all__'  # Or specify fields explicitly
+        fields = '__all__'  # Or specify fields like ['id', 'user_id', 'course_id', 'message', 'response']

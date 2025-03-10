@@ -1,0 +1,36 @@
+Here are 10 PHP-related questions and answers without examples:
+Basic PHP Questions
+
+    Q: What is PHP?
+    A: PHP is a server-side scripting language designed for web development but can also be used as a general-purpose programming language.
+
+    Q: How do you declare a variable in PHP?
+    A: In PHP, variables are declared using the $ symbol followed by the variable name.
+
+    Q: What is the difference between echo and print in PHP?
+    A: echo can take multiple parameters and is faster, while print returns a value and only takes a single argument.
+
+    Q: How does PHP connect to a database?
+    A: PHP connects to a database using MySQLi or PDO, which provide methods for executing queries and handling database interactions.
+
+    Q: What are PHP superglobals?
+    A: Superglobals are built-in PHP variables that are always accessible, regardless of scope, such as $_GET, $_POST, $_SESSION, and $_SERVER.
+
+Intermediate PHP Questions
+
+    Q: How do you handle form data in PHP?
+    A: PHP handles form data using $_POST for POST requests and $_GET for GET requests, often with validation and sanitization.
+
+    Q: How do sessions work in PHP?
+    A: PHP sessions store user-specific data across multiple pages, initialized with session_start() and managed using the $_SESSION array.
+
+    Q: What is the difference between include and require?
+    A: include allows the script to continue executing even if the file is missing, while require causes a fatal error if the file is not found.
+
+Advanced PHP Questions
+
+    Q: What is Composer in PHP?
+    A: Composer is a dependency manager for PHP that simplifies package management and autoloading of external libraries.
+
+    Q: How can SQL injection be prevented in PHP?
+    A: SQL injection can be prevented using prepared statements, input validation, and escaping special characters when interacting with a database.

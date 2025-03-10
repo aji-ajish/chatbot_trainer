@@ -16,8 +16,14 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from django.http import JsonResponse
+
+
+def not_allowed(request, *args, **kwargs):
+    return JsonResponse({'error': 'Access to this URL is not allowed'}, status=403)
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('chatbot.urls')),
+    path('', not_allowed),
 ]

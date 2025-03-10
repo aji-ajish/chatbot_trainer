@@ -16,6 +16,11 @@ from .serializers import UploadedFileSerializer
 import logging
 from .models import ChatHistory
 from .serializers import ChatHistorySerializer
+from django.db.models import Sum, Value
+from django.db import models
+from django.db.models.functions import Coalesce
+
+
 
 
 # Set up logging
@@ -193,50 +198,124 @@ def delete_file(request, file_id):
 # Process Query API
 @api_view(['POST'])
 def process_query(request):
-    # Get API Key from request header
     api_key = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
     if not api_key:
         return Response({'detail': 'API key is missing'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Get user_id and course_id
     user_id = request.data.get('user_id')
     course_id = request.data.get('course_id')
     user_query = request.data.get('user_query')
-    print("Received user_id:", user_id)  # Debugging
-    print("Received course_id:", course_id)  # Debugging
+    response_text = request.data.get('response')  # Static response from Moodle
+    is_static = request.data.get('is_static', False)  # Check if it's a static response
+
     if not user_id or not course_id or not user_query:
         return Response({'detail': 'user_id, course_id, and user_query are required'}, status=status.HTTP_400_BAD_REQUEST)
 
-    # Locate the FAISS index directory
-    faiss_dir = f"faiss_index"
+    # Token count for request
+    enc = tiktoken.encoding_for_model("gpt-4o-mini")
+    request_tokens = len(enc.encode(user_query))
+
+    # If it's a static response, store it directly
+    if is_static:
+        chat_entry = ChatHistory.objects.create(
+            user_id=user_id,
+            course_id=course_id,
+            user_query=user_query,
+            response=response_text,
+            req_token=request_tokens,
+            res_token=0  # No AI tokens used
+        )
+
+        return Response({
+            'user_query': user_query,
+            'response': response_text,
+            'req_token': request_tokens,
+            'res_token': 0,
+            'chat_id': chat_entry.id
+        }, status=status.HTTP_200_OK)
+
+    # If no FAISS training data, return default message & save it in the chat history
+    faiss_dir = "faiss_index"
     course_faiss_indexes = [d for d in os.listdir(faiss_dir) if d.startswith(f"{course_id}_")]
-
+    print(f"index---------------->{course_faiss_indexes}")
     if not course_faiss_indexes:
-        return Response({'detail': 'No training data found for this course'}, status=status.HTTP_404_NOT_FOUND)
+        default_response = "I'm sorry, but I couldn't find relevant training data for this course. Please contact your instructor for assistance."
 
-    # Load FAISS index (latest)
-    latest_index = sorted(course_faiss_indexes, reverse=True)[0]  # Use the most recent index
+        chat_entry = ChatHistory.objects.create(
+            user_id=user_id,
+            course_id=course_id,
+            user_query=user_query,
+            response=default_response,
+            req_token=request_tokens,
+            res_token=0  # No AI tokens used
+        )
+
+        return Response({
+            'user_query': user_query,
+            'response': default_response,
+            'req_token': request_tokens,
+            'res_token': 0,
+            'chat_id': chat_entry.id
+        }, status=status.HTTP_200_OK)
+
+    # Process with FAISS and LLM (same as before)
+    latest_index = sorted(course_faiss_indexes, reverse=True)[0]
     faiss_index_path = os.path.join(faiss_dir, latest_index)
 
     try:
         embeddings = OpenAIEmbeddings(openai_api_key=api_key)
         faiss_db = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
 
-        # Initialize RetrievalQA
+        # Retrieve top 3 matches
+        retriever = faiss_db.as_retriever(search_kwargs={"k": 3})
+        docs = retriever.get_relevant_documents(user_query)
+
+        # Set a similarity threshold (adjust as needed)
+        similarity_threshold = 0.5
+
+        # Find the most relevant document
+        best_match = None
+        best_score = 0
+
+        for doc in docs:
+            score = doc.metadata.get("score", 1.0)  # FAISS does not return scores by default
+            if score > best_score:
+                best_match = doc
+                best_score = score
+
+        # If no relevant match, return "I don't know"
+        if best_match is None or best_score < similarity_threshold:
+            response_text = "I'm sorry, but I don't have enough information in the training data to answer that."
+
+            # Store in chat history
+            chat_entry = ChatHistory.objects.create(
+                user_id=user_id,
+                course_id=course_id,
+                user_query=user_query,
+                response=response_text,
+                req_token=request_tokens,
+                res_token=0  # No AI tokens used
+            )
+
+            return Response({
+                'user_query': user_query,
+                'response': response_text,
+                'req_token': request_tokens,
+                'res_token': 0,
+                'chat_id': chat_entry.id
+            }, status=status.HTTP_200_OK)
+
+        # Force LLM to only answer based on retrieved FAISS data
         llm = ChatOpenAI(openai_api_key=api_key)
         qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=faiss_db.as_retriever())
 
-        # Token count for request
-        enc = tiktoken.encoding_for_model("gpt-4o-mini")
-        request_tokens = len(enc.encode(user_query))
-
-        # Process the query
-        response_text = qa_chain.run(user_query)
+        response = qa_chain.invoke({"query": user_query})  # Correct way to call the chain
+        response_text = response["result"]  # Extract answer from the output dictionary
 
         # Token count for response
         response_tokens = len(enc.encode(response_text))
 
-        # Save chat history
+        # Save chat history (only for AI responses)
         chat_entry = ChatHistory.objects.create(
             user_id=user_id,
             course_id=course_id,
@@ -259,20 +338,35 @@ def process_query(request):
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+
+
+
 # Chat History API
 @api_view(['GET'])
 def chat_history(request):
     user_id = request.query_params.get('user_id')
     course_id = request.query_params.get('course_id')
 
-    if not user_id or not course_id:
-        return Response({'detail': 'user_id and course_id are required'}, status=status.HTTP_400_BAD_REQUEST)
+    if not user_id:
+        return Response({'detail': 'user_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
     if user_id == "admin":
-        # Admin: Fetch all chat history for the course
-        chat_entries = ChatHistory.objects.filter(course_id=course_id)
-    else:
-        # Regular user: Fetch only their own chat history
+        # Admin: Summarize all courses by summing tokens
+        chat_summary = (
+            ChatHistory.objects.values('course_id')
+            .annotate(
+                total_req_token=Coalesce(Sum('req_token'), Value(0)),
+                total_res_token=Coalesce(Sum('res_token'), Value(0))
+            )
+        )
+
+        # Ensure JSON format consistency
+        return Response({"summary": list(chat_summary)}, status=status.HTTP_200_OK)
+    elif course_id:
+        # Regular user: Fetch only their own chat history for a specific course
         chat_entries = ChatHistory.objects.filter(user_id=user_id, course_id=course_id)
+    else:
+        return Response({'detail': 'course_id is required for non-admin users'}, status=status.HTTP_400_BAD_REQUEST)
 
     return Response(ChatHistorySerializer(chat_entries, many=True).data, status=status.HTTP_200_OK)
+
