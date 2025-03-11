@@ -20,9 +20,6 @@ from django.db.models import Sum, Value
 from django.db import models
 from django.db.models.functions import Coalesce
 
-
-
-
 # Set up logging
 logger = logging.getLogger(__name__)
 
@@ -196,6 +193,7 @@ def delete_file(request, file_id):
 
 
 # Process Query API
+# Process Query API
 @api_view(['POST'])
 def process_query(request):
     api_key = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
@@ -234,10 +232,12 @@ def process_query(request):
             'chat_id': chat_entry.id
         }, status=status.HTTP_200_OK)
 
-    # If no FAISS training data, return default message & save it in the chat history
+    # Process with FAISS and LLM (same as before)
     faiss_dir = "faiss_index"
+    # Only retrieve indexes for the current course_id
     course_faiss_indexes = [d for d in os.listdir(faiss_dir) if d.startswith(f"{course_id}_")]
-    print(f"index---------------->{course_faiss_indexes}")
+    print(f"Indexing for course {course_id}: {course_faiss_indexes}")  # Debugging
+
     if not course_faiss_indexes:
         default_response = "I'm sorry, but I couldn't find relevant training data for this course. Please contact your instructor for assistance."
 
@@ -258,9 +258,10 @@ def process_query(request):
             'chat_id': chat_entry.id
         }, status=status.HTTP_200_OK)
 
-    # Process with FAISS and LLM (same as before)
+    # Process the most recent index for the course
     latest_index = sorted(course_faiss_indexes, reverse=True)[0]
     faiss_index_path = os.path.join(faiss_dir, latest_index)
+    print(f"Using FAISS index: {faiss_index_path}")  # Debugging
 
     try:
         embeddings = OpenAIEmbeddings(openai_api_key=api_key)
@@ -270,21 +271,14 @@ def process_query(request):
         retriever = faiss_db.as_retriever(search_kwargs={"k": 3})
         docs = retriever.get_relevant_documents(user_query)
 
-        # Set a similarity threshold (adjust as needed)
-        similarity_threshold = 0.5
+        # Debugging the documents retrieved
+        print(f"Documents retrieved: {docs}")  # Debugging
 
-        # Find the most relevant document
-        best_match = None
-        best_score = 0
-
-        for doc in docs:
-            score = doc.metadata.get("score", 1.0)  # FAISS does not return scores by default
-            if score > best_score:
-                best_match = doc
-                best_score = score
+        # Filter the documents based on the course_id dynamically (no static "react" term)
+        docs = [doc for doc in docs if doc.metadata.get("course_id") == str(course_id)]
 
         # If no relevant match, return "I don't know"
-        if best_match is None or best_score < similarity_threshold:
+        if not docs:
             response_text = "I'm sorry, but I don't have enough information in the training data to answer that."
 
             # Store in chat history
@@ -336,8 +330,6 @@ def process_query(request):
     except Exception as e:
         logger.error(f"Error processing query: {e}")
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 
 
 
