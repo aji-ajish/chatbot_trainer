@@ -2,3 +2,5 @@ env/
 chatbot_trainer/staticfiles/
 /chatbot_trainer/uploads/
 chatbot_trainer/faiss_index
+chatbot_trainer/chatbot/__pycache__/
+chatbot_trainer/chatbot_trainer/__pycache__/
