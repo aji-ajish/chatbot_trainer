@@ -1,2 +1,4 @@
 env/
 chatbot_trainer/staticfiles/
+/chatbot_trainer/uploads/
+chatbot_trainer/faiss_index
