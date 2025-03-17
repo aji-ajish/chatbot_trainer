@@ -78,24 +78,13 @@ WSGI_APPLICATION = 'chatbot_trainer.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
 
-# DATABASES = {
-#     'default': {
-#         'ENGINE': 'django.db.backends.mysql',
-#         'NAME': 'chatbot_trainer',
-#         'USER': 'ajish',
-#         'PASSWORD': 'password',
-#         'HOST': 'localhost',
-#         'PORT': '3306',
-#     }
-# }
-
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'chatbot_trainer',
-        'USER': 'moodle_usr',
-        'PASSWORD': 'D8wSW58UtoEZ',
-        'HOST': 'infospica-mysql80-mysql',
+        'USER': 'ajish',
+        'PASSWORD': 'password',
+        'HOST': 'localhost',
         'PORT': '3306',
     }
 }
