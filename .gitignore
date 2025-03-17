@@ -4,3 +4,4 @@ uploads/
 faiss_index
 chatbot/__pycache__/
 chatbot_trainer/__pycache__/
+chatbot/migrations/__pycache__/
