@@ -83,13 +83,14 @@ WSGI_APPLICATION = 'chatbot_trainer.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.getenv('MYSQL_DATABASE', 'chatbot_trainer'),
-        'USER': os.getenv('MYSQL_USER', 'ajish'),
-        'PASSWORD': os.getenv('MYSQL_PASSWORD', 'password'),
-        'HOST': os.getenv('MYSQL_HOST', 'localhost'),
-        'PORT': os.getenv('MYSQL_PORT', '3306'),
+        'NAME': 'chatbot_trainer',
+        'USER': 'ajish',
+        'PASSWORD': 'password',
+        'HOST': 'localhost',
+        'PORT': '3306',
     }
 }
+
 
 
 # Password validation

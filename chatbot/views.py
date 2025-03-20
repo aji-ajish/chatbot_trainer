@@ -17,6 +17,9 @@ from rest_framework.response import Response
 from rest_framework import status
 from .models import UploadedFile, ChatHistory
 from .serializers import UploadedFileSerializer, ChatHistorySerializer
+import nltk
+from sklearn.feature_extraction.text import TfidfVectorizer
+from .models import FileKeywords
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +85,7 @@ def upload_file(request):
         return Response({'detail': 'API key is missing'}, status=status.HTTP_400_BAD_REQUEST)
 
     course_id = request.data.get('course_id')
+    type = request.data.get('type')
     if not course_id:
         return Response({'detail': 'Course ID is required'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -118,6 +122,7 @@ def upload_file(request):
         filename=filename,
         filetype=file.content_type,
         filepath=file_path,
+        type=type,
         request_token=request_tokens,
         response_token=response_tokens
     )
@@ -226,6 +231,18 @@ def count_faiss_vectors(faiss_index_path, api_key):
     return 0
 
 
+nltk.download('punkt')
+
+def extract_keywords(text, top_n=10):
+    """
+    Extracts top keywords using TF-IDF.
+    """
+    words = nltk.word_tokenize(text)
+    words = [word.lower() for word in words if word.isalnum()]
+    vectorizer = TfidfVectorizer(max_features=top_n, stop_words='english')
+    vectorizer.fit_transform([" ".join(words)])
+    return vectorizer.get_feature_names_out()
+
 @api_view(['POST'])
 def process_query(request):
     api_key = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
@@ -243,7 +260,6 @@ def process_query(request):
 
     enc = tiktoken.encoding_for_model("gpt-4o-mini")
     request_tokens = len(enc.encode(user_query))
-
     if is_static:
         chat_entry = ChatHistory.objects.create(
             user_id=user_id, course_id=course_id, user_query=user_query,
@@ -252,6 +268,15 @@ def process_query(request):
         return Response({'user_query': user_query, 'response': response_text, 
                          'req_token': request_tokens, 'res_token': 0, 
                          'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+
+    faiss_index_path = f"faiss_index/{course_id}"
+
+    # Check if course type is enabled or disabled
+    uploaded_files = UploadedFile.objects.filter(course_id=course_id)
+    if not uploaded_files.exists():
+        return Response({'detail': 'No uploaded files found for this course.'}, status=status.HTTP_404_NOT_FOUND)
+
+    course_type = uploaded_files.first().type  # Assuming all files under the same course have the same type
 
     faiss_index_path = f"faiss_index/{course_id}"
     
@@ -268,23 +293,26 @@ def process_query(request):
     try:
         embeddings = OpenAIEmbeddings(openai_api_key=api_key)
         faiss_db = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
-        retriever = faiss_db.as_retriever(search_kwargs={"k": 5})  # Retrieve more documents to filter properly
+        retriever = faiss_db.as_retriever(search_kwargs={"k": 5})
         retrieved_docs = retriever.invoke(user_query)
 
-        print("Retrieved Documents:", retrieved_docs)  # Debugging
-
-        # Filter documents that belong to the given course_id
+        # Filter documents for the given course_id
         filtered_docs = [doc for doc in retrieved_docs if str(course_id) in doc.metadata.get("source", "")]
 
-        print("Filtered Documents:", filtered_docs)  # Debugging
+        if not filtered_docs and course_type == False:
+            # If course type is disabled, do not use OpenAI, return only FAISS results
+            return Response({"response": "No relevant training data found."}, status=200)
 
-        if not filtered_docs:
-            return Response({"response": "No relevant training data found for this course."}, status=200)
+        if filtered_docs:
+            llm = ChatOpenAI(openai_api_key=api_key)
+            qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+            response = qa_chain.invoke({"query": user_query})
+            response_text = response["result"]
 
-        llm = ChatOpenAI(openai_api_key=api_key)
-        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
-        response = qa_chain.invoke({"query": user_query})
-        response_text = response["result"]
+        elif course_type == True:
+            # Course type enabled but no relevant training data, fallback to OpenAI
+            llm = ChatOpenAI(openai_api_key=api_key)
+            response_text = llm.invoke(user_query)
 
         response_tokens = len(enc.encode(response_text))
         chat_entry = ChatHistory.objects.create(
@@ -298,7 +326,6 @@ def process_query(request):
 
     except Exception as e:
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
 
 
 
@@ -331,3 +358,53 @@ def chat_history(request):
 
     return Response(ChatHistorySerializer(chat_entries, many=True).data, status=status.HTTP_200_OK)
 
+@api_view(['POST'])
+def update_course_type(request):
+    course_id = request.data.get('id')
+    new_type = request.data.get('type')
+
+    if new_type not in [True, False]:
+        return Response({'detail': 'Invalid type value. Must be True or False.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    uploaded_files = UploadedFile.objects.filter(id=id)
+    if not uploaded_files.exists():
+        return Response({'detail': 'No uploaded files found for this course.'}, status=status.HTTP_404_NOT_FOUND)
+
+    uploaded_files.update(type=new_type)
+    
+    return Response({'detail': f'Course type updated successfully to {"Enabled" if new_type else "Disabled"}.'}, status=status.HTTP_200_OK)
+
+
+
+@api_view(['GET'])
+def list_keywords(request, course_id):
+    keywords = FileKeywords.objects.filter(course_id=course_id)
+    data = [{"id": k.id, "keyword": k.keyword} for k in keywords]
+    return Response({"keywords": data}, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+def edit_keyword(request, keyword_id):
+    try:
+        keyword_entry = FileKeywords.objects.get(id=keyword_id)
+    except FileKeywords.DoesNotExist:
+        return Response({'detail': 'Keyword not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_keyword = request.data.get("keyword")
+    if not new_keyword:
+        return Response({'detail': 'New keyword is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    keyword_entry.keyword = new_keyword
+    keyword_entry.save()
+    return Response({'detail': 'Keyword updated successfully'}, status=status.HTTP_200_OK)
+
+
+@api_view(['DELETE'])
+def delete_keyword(request, keyword_id):
+    try:
+        keyword_entry = FileKeywords.objects.get(id=keyword_id)
+    except FileKeywords.DoesNotExist:
+        return Response({'detail': 'Keyword not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    keyword_entry.delete()
+    return Response({'detail': 'Keyword deleted successfully'}, status=status.HTTP_200_OK)
