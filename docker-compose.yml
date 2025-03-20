@@ -5,11 +5,8 @@ services:
     image: mysql:8
     container_name: chatbot_mysql
     restart: always
-    environment:
-      MYSQL_ROOT_PASSWORD: rootpassword
-      MYSQL_DATABASE: chatbot_trainer
-      MYSQL_USER: ajish
-      MYSQL_PASSWORD: password
+    env_file:
+      - .env
     ports:
       - "3307:3306"
     volumes:
@@ -19,22 +16,21 @@ services:
 
   django:
     build: .
+    image: infospica/chatbot-dev:1.0  # Set the custom image name
     container_name: chatbot_django
     restart: always
     depends_on:
       - db
     ports:
       - "8888:8888"
-    environment:
-      MYSQL_DATABASE: chatbot_trainer
-      MYSQL_USER: ajish
-      MYSQL_PASSWORD: password
-      MYSQL_HOST: db
-      MYSQL_PORT: 3306
+    env_file:
+      - .env
     volumes:
       - .:/app
     networks:
       - chatbot_network
+
+
 
 networks:
   chatbot_network:

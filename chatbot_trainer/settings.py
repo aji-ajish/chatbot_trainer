@@ -25,7 +25,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-&(yhlhs5phf$55xdv5b%*o@$$$(#&21!9xm^64z(7r=msf0a1('
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = False
 
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django']
 
@@ -83,11 +83,11 @@ WSGI_APPLICATION = 'chatbot_trainer.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'chatbot_trainer',
-        'USER': 'ajish',
-        'PASSWORD': 'password',
-        'HOST': 'localhost',
-        'PORT': '3306',
+        'NAME': os.getenv('MYSQL_DATABASE', 'chatbot_trainer'),
+        'USER': os.getenv('MYSQL_USER', 'ajish'),
+        'PASSWORD': os.getenv('MYSQL_PASSWORD', 'password'),
+        'HOST': os.getenv('MYSQL_HOST', 'localhost'),
+        'PORT': os.getenv('MYSQL_PORT', '3306'),
     }
 }
 
