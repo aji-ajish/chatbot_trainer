@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import UploadedFile , ChatHistory
+from .models import UploadedFile , ChatHistory, FileKeywords
 
 class UploadedFileSerializer(serializers.ModelSerializer):
     class Meta:
@@ -10,3 +10,8 @@ class ChatHistorySerializer(serializers.ModelSerializer):
     class Meta:
         model = ChatHistory
         fields = '__all__'  # Or specify fields like ['id', 'user_id', 'course_id', 'message', 'response']
+
+class FileKeywordsSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = FileKeywords
+        fields = '__all__'

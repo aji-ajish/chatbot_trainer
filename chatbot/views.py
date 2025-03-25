@@ -4,6 +4,7 @@ import time
 import logging
 import tiktoken
 import faiss
+import spacy
 from django.db.models import Sum, Value
 from django.db.models.functions import Coalesce
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, UnstructuredWordDocumentLoader, UnstructuredExcelLoader
@@ -11,12 +12,15 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
+
 from langchain.chains import RetrievalQA
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
-from .models import UploadedFile, ChatHistory
-from .serializers import UploadedFileSerializer, ChatHistorySerializer
+from .models import UploadedFile, ChatHistory, FileKeywords
+from .serializers import UploadedFileSerializer, ChatHistorySerializer, FileKeywordsSerializer
+
 
 
 logger = logging.getLogger(__name__)
@@ -76,6 +80,35 @@ def process_file(file_path, file_type, faiss_index_path, api_key):
 
 
 
+# Load spaCy model
+nlp = spacy.load("en_core_web_sm")
+
+def extract_keywords(text):
+    """Extracts meaningful keywords from text using spaCy, removing unnecessary words dynamically."""
+    doc = nlp(text)
+
+    # Extract meaningful keywords (nouns & proper nouns only)
+    keywords = [
+        token.text for token in doc 
+        if token.pos_ in {"NOUN", "PROPN"} and not token.is_stop and len(token.text) > 1
+    ]
+
+    # Extract Named Entities (e.g., "PHP", "MySQLi", "PDO")
+    entities = [ent.text for ent in doc.ents]
+
+    # Extract useful noun chunks
+    noun_chunks = [
+        chunk.text for chunk in doc.noun_chunks
+        if len(chunk.text.split()) > 1  # Avoid single-word phrases
+    ]
+
+    # Merge & remove duplicates
+    final_keywords = list(set(keywords + entities + noun_chunks))
+
+    return ', '.join(final_keywords)  # No limit applied
+
+
+
 @api_view(['POST'])
 def upload_file(request):
     api_key = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
@@ -125,6 +158,14 @@ def upload_file(request):
         response_token=response_tokens
     )
 
+    # Extract keywords from file content
+    loader = get_loader(file_path, file_type)
+    if loader:
+        documents = loader.load()
+        file_text = " ".join([doc.page_content for doc in documents])
+        keywords = extract_keywords(file_text)
+        FileKeywords.objects.create(course_id=course_id, file=uploaded_file, keywords=keywords)
+
     return Response({'detail': 'File uploaded successfully', 'file': UploadedFileSerializer(uploaded_file).data}, status=status.HTTP_201_CREATED)
 
 @api_view(['GET'])
@@ -156,7 +197,9 @@ def delete_file(request, file_id):
         print(f"❌ Error deleting file: {str(e)}")
         return Response({'detail': f'Error deleting file: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-    # Delete database record
+    # Delete associated keywords
+    FileKeywords.objects.filter(file=file_record).delete()
+
     try:
         file_record.delete()
     except Exception as e:
@@ -245,6 +288,12 @@ def process_query(request):
     if not user_id or not course_id or not user_query:
         return Response({'detail': 'user_id, course_id, and user_query are required'}, status=status.HTTP_400_BAD_REQUEST)
 
+    uploaded_file = UploadedFile.objects.filter(course_id=course_id).first()
+    if not uploaded_file:
+        return Response({'detail': 'No file found for this course.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    file_type = uploaded_file.type  # 0 = Training Data Only, 1 = AI-assisted Response
+
     enc = tiktoken.encoding_for_model("gpt-4o-mini")
     request_tokens = len(enc.encode(user_query))
 
@@ -258,38 +307,45 @@ def process_query(request):
                          'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
 
     faiss_index_path = f"faiss_index/{course_id}"
-    
+
     if not os.path.exists(faiss_index_path):
-        response_text = "No training data available for this course."
-        chat_entry = ChatHistory.objects.create(
-            user_id=user_id, course_id=course_id, user_query=user_query,
-            response=response_text, req_token=request_tokens, res_token=0
-        )
-        return Response({'user_query': user_query, 'response': response_text, 
-                         'req_token': request_tokens, 'res_token': 0, 
-                         'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        return Response({"response": "No training data available for this course."}, status=200)
 
     try:
         embeddings = OpenAIEmbeddings(openai_api_key=api_key)
         faiss_db = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
-        retriever = faiss_db.as_retriever(search_kwargs={"k": 5})  # Retrieve more documents to filter properly
+        retriever = faiss_db.as_retriever(search_kwargs={"k": 3})  # Fetch 3 relevant results
+
         retrieved_docs = retriever.invoke(user_query)
 
-        print("Retrieved Documents:", retrieved_docs)  # Debugging
+        # 🔥 Extract and clean the best-matching document
+        filtered_docs = [doc.page_content for doc in retrieved_docs if str(course_id) in doc.metadata.get("source", "")]
+        if filtered_docs:
+            response_text = filtered_docs[0]  # Take the most relevant result
 
-        # Filter documents that belong to the given course_id
-        filtered_docs = [doc for doc in retrieved_docs if str(course_id) in doc.metadata.get("source", "")]
+            # ✅ Remove unwanted "Q: ..." and "A: ..." format
+            response_text = re.sub(r"Q:.*?A:\s*", "", response_text).strip()
 
-        print("Filtered Documents:", filtered_docs)  # Debugging
+        else:
+            # 🚨 If type=0, do not use OpenAI at all
+            if file_type == 0:
+                return Response({"response": "No relevant data available."}, status=200)
 
-        if not filtered_docs:
-            return Response({"response": "No relevant training data found for this course."}, status=200)
+            # 🔥 Use OpenAI only if training data is missing
+            extracted_keywords = FileKeywords.objects.filter(course_id=course_id).values_list("keywords", flat=True)
+            extracted_keywords = set(",".join(extracted_keywords).split(","))
+            query_keywords = set(spacy_keyword_extractor(user_query))
 
-        llm = ChatOpenAI(openai_api_key=api_key)
-        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
-        response = qa_chain.invoke({"query": user_query})
-        response_text = response["result"]
+            if not query_keywords.intersection(extracted_keywords):
+                return Response({"response": "No relevant data available."}, status=200)
 
+            # ✅ Use OpenAI as a fallback
+            llm = ChatOpenAI(openai_api_key=api_key)
+            qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+            response = qa_chain.invoke({"query": user_query})
+            response_text = response.get("result", "No response from AI.")
+
+        # Count tokens and store chat history
         response_tokens = len(enc.encode(response_text))
         chat_entry = ChatHistory.objects.create(
             user_id=user_id, course_id=course_id, user_query=user_query,
@@ -303,6 +359,24 @@ def process_query(request):
     except Exception as e:
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+
+
+@api_view(['PATCH'])
+def update_file_type(request, file_id):
+    """API to update the 'type' field in the UploadedFile model."""
+    try:
+        uploaded_file = UploadedFile.objects.get(id=file_id)
+    except UploadedFile.DoesNotExist:
+        return Response({'detail': 'File not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_type = request.data.get("type")
+    if new_type not in [0, 1]:
+        return Response({'detail': 'Invalid type. Must be 0 or 1.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    uploaded_file.type = new_type
+    uploaded_file.save()
+
+    return Response({'detail': f'File type updated to {new_type} successfully.'}, status=status.HTTP_200_OK)
 
 
 # Chat History API
@@ -334,3 +408,31 @@ def chat_history(request):
 
     return Response(ChatHistorySerializer(chat_entries, many=True).data, status=status.HTTP_200_OK)
 
+
+
+@api_view(['GET'])
+def get_keywords(request, file_id):
+    try:
+        keywords_record = FileKeywords.objects.get(file_id=file_id)
+    except FileKeywords.DoesNotExist:
+        return Response({'detail': 'Keywords not found for this file'}, status=status.HTTP_404_NOT_FOUND)
+
+    return Response(FileKeywordsSerializer(keywords_record).data)
+
+
+
+@api_view(['PUT'])
+def update_keywords(request, file_id):
+    try:
+        keywords_record = FileKeywords.objects.get(file_id=file_id)
+    except FileKeywords.DoesNotExist:
+        return Response({'detail': 'Keywords not found for this file'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_keywords = request.data.get('keywords')
+    if not new_keywords:
+        return Response({'detail': 'Keywords field is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    keywords_record.keywords = new_keywords
+    keywords_record.save()
+
+    return Response({'detail': 'Keywords updated successfully', 'keywords': keywords_record.keywords})
