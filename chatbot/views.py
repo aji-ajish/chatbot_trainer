@@ -11,6 +11,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
@@ -257,6 +258,9 @@ def process_query(request):
                          'req_token': request_tokens, 'res_token': 0, 
                          'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
 
+    # Check if any file for this course_id has type=1
+    has_advanced_processing = UploadedFile.objects.filter(course_id=course_id, type=1).exists()
+
     faiss_index_path = f"faiss_index/{course_id}"
     
     if not os.path.exists(faiss_index_path):
@@ -283,12 +287,53 @@ def process_query(request):
         print("Filtered Documents:", filtered_docs)  # Debugging
 
         if not filtered_docs:
-            return Response({"response": "No relevant training data found for this course."}, status=200)
+            response_text = "No relevant training data found for this course."
+            chat_entry = ChatHistory.objects.create(
+                user_id=user_id, course_id=course_id, user_query=user_query,
+                response=response_text, req_token=request_tokens, res_token=0
+            )
+            return Response({'user_query': user_query, 'response': response_text, 
+                             'req_token': request_tokens, 'res_token': 0, 
+                             'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
 
-        llm = ChatOpenAI(openai_api_key=api_key)
-        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
-        response = qa_chain.invoke({"query": user_query})
-        response_text = response["result"]
+        # Extract relevant course-related keywords from retrieved documents
+        course_keywords = set()
+        for doc in filtered_docs:
+            words = doc.page_content.lower().split()
+            course_keywords.update(words)
+
+        # Convert retrieved docs into text format
+        context_text = "\n".join([doc.page_content for doc in filtered_docs])
+
+        # Ensure retrieved data is relevant to the course
+        if not context_text:
+            response_text = "No relevant training data found for this course."
+        elif any(word in user_query.lower() for word in ["react", "angular", "vue"]) and not any(kw in ["javascript", "frontend"] for kw in course_keywords):
+            response_text = "Your question seems to be about a different topic than this course covers. Please ask questions relevant to the provided training material."
+        else:
+            try:
+                llm = ChatOpenAI(openai_api_key=api_key)
+
+                print(f"Sending to OpenAI:\nContext: {context_text}\nQuery: {user_query}")  # Debugging
+
+                refined_response = llm.invoke(f"Use only the following course-related information to answer the question:\n{context_text}\n\nQuestion: {user_query}")
+
+                print(f"OpenAI Response: {refined_response}")  # Debugging
+
+                # Ensure response is valid
+                if isinstance(refined_response, str):
+                    response_text = refined_response
+                elif hasattr(refined_response, 'content'):  
+                    response_text = refined_response.content
+                else:
+                    response_text = "I'm sorry, but I couldn't generate a response."
+            
+            except Exception as e:
+                print(f"Error calling OpenAI: {str(e)}")  
+                return Response({'detail': f'Error processing OpenAI request: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+
 
         response_tokens = len(enc.encode(response_text))
         chat_entry = ChatHistory.objects.create(
@@ -302,8 +347,6 @@ def process_query(request):
 
     except Exception as e:
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 
 # Chat History API
 @api_view(['GET'])
@@ -334,3 +377,19 @@ def chat_history(request):
 
     return Response(ChatHistorySerializer(chat_entries, many=True).data, status=status.HTTP_200_OK)
 
+@api_view(['PATCH'])
+def update_file_type(request, file_id):
+    """API to update the 'type' field in the UploadedFile model."""
+    try:
+        uploaded_file = UploadedFile.objects.get(id=file_id)
+    except UploadedFile.DoesNotExist:
+        return Response({'detail': 'File not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_type = request.data.get("type")
+    if new_type not in [0, 1]:
+        return Response({'detail': 'Invalid type. Must be 0 or 1.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    uploaded_file.type = new_type
+    uploaded_file.save()
+
+    return Response({'detail': f'File type updated to {new_type} successfully.'}, status=status.HTTP_200_OK)
