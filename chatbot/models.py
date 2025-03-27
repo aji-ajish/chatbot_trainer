@@ -30,6 +30,8 @@ class ChatHistory(models.Model):
     response = models.TextField()
     req_token = models.IntegerField()
     res_token = models.IntegerField()
+    input_prompt_token = models.IntegerField(default=0)
+    total_token = models.IntegerField(default=0)
     timestamp = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

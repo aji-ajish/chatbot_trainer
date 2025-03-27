@@ -11,12 +11,16 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain.chains import RetrievalQA
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from .models import UploadedFile, ChatHistory
 from .serializers import UploadedFileSerializer, ChatHistorySerializer
+from langchain.schema import AIMessage
+import unicodedata
+from django.db.utils import IntegrityError
 
 
 logger = logging.getLogger(__name__)
@@ -230,6 +234,37 @@ def count_faiss_vectors(faiss_index_path, api_key):
 
 
 
+def classify_query(query, course_name, api_key):
+    """Classifies the query while ensuring relevance to the course."""
+    try:
+        llm = ChatOpenAI(openai_api_key=api_key)
+        response = llm.invoke(
+            f"Classify the user query into one of the following categories for the course '{course_name}':\n\n"
+            f"Query: '{query}'\n\n"
+            f"Categories:\n"
+            f"- 'Concept Explanation' (If asking about a topic conceptually)\n"
+            f"- 'Question Paper Request' (If requesting a new question paper)\n"
+            f"- 'Question Paper Answer Request' (If requesting answers for an existing question paper OR seeking solutions to specific questions)\n"
+            f"- 'General Query' (For other course-related questions)\n"
+            f"- 'Irrelevant Query' (If NOT related to the course '{course_name}')\n\n"
+            f"Respond **only** with the category name."
+        )
+
+        category = response.content.strip() if isinstance(response, AIMessage) else str(response).strip()
+
+        print(f"Query Type: {category}")  # Debugging
+
+        return category
+
+    except Exception as e:
+        print(f"OpenAI Classification Error: {str(e)}")
+        return "General Query"
+
+
+def clean_text(text):
+    """Normalize Unicode text to avoid database encoding issues."""
+    return unicodedata.normalize('NFKC', text)
+
 @api_view(['POST'])
 def process_query(request):
     api_key = request.headers.get('Authorization', '').replace('Bearer ', '').strip()
@@ -238,72 +273,200 @@ def process_query(request):
 
     user_id = request.data.get('user_id')
     course_id = request.data.get('course_id')
+    course_name = request.data.get('course_name')
     user_query = request.data.get('user_query')
     response_text = request.data.get('response', "")
     is_static = request.data.get('is_static', False)
 
-    if not user_id or not course_id or not user_query:
-        return Response({'detail': 'user_id, course_id, and user_query are required'}, status=status.HTTP_400_BAD_REQUEST)
+    if not user_id or not course_id or not user_query or not course_name:
+        return Response({'detail': 'user_id, course_id, course_name, and user_query are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    # Normalize Unicode characters
+    user_query = clean_text(user_query)
 
     enc = tiktoken.encoding_for_model("gpt-4o-mini")
     request_tokens = len(enc.encode(user_query))
+    print(f"🔹 Request Tokens (User Query): {request_tokens}")
 
     if is_static:
-        chat_entry = ChatHistory.objects.create(
-            user_id=user_id, course_id=course_id, user_query=user_query,
-            response=response_text, req_token=request_tokens, res_token=0
-        )
-        return Response({'user_query': user_query, 'response': response_text, 
-                         'req_token': request_tokens, 'res_token': 0, 
-                         'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        try:
+            chat_entry = ChatHistory.objects.create(
+                user_id=user_id, course_id=course_id, user_query=user_query,
+                response=response_text, req_token=request_tokens, res_token=0
+            )
+            return Response({'user_query': user_query, 'response': response_text, 
+                            'req_token': request_tokens, 'res_token': 0, 
+                            'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        except IntegrityError as e:
+            print(f"Database Error: {str(e)}")
+            return Response({'detail': 'Database error while saving chat history.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
+    # Classify the query
+    query_type = classify_query(user_query, course_name, api_key)
+
+    if query_type == "Irrelevant Query":
+        response_text = (
+            f"Your query does not seem relevant to the course '{course_name}'.\n\n"
+            "Please make sure your question is related to the course content. If you need help, try rephrasing your query "
+            "or providing more context about what you're looking for."
+        )
+        
+        try:
+            chat_entry = ChatHistory.objects.create(
+                user_id=user_id, course_id=course_id, user_query=user_query,
+                response=response_text, req_token=request_tokens, res_token=0
+            )
+            return Response({
+                'user_query': user_query,
+                'response': response_text,
+                'req_token': request_tokens,
+                'res_token': 0,
+                'chat_id': chat_entry.id
+            }, status=status.HTTP_200_OK)
+        
+        except IntegrityError as e:
+            print(f"Database Error: {str(e)}")
+            return Response({'detail': 'An error occurred while saving the chat history. Please try again later.'}, 
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+    # Check for advanced processing
+    has_advanced_processing = UploadedFile.objects.filter(course_id=course_id, type=1).exists()
     faiss_index_path = f"faiss_index/{course_id}"
     
     if not os.path.exists(faiss_index_path):
         response_text = "No training data available for this course."
-        chat_entry = ChatHistory.objects.create(
-            user_id=user_id, course_id=course_id, user_query=user_query,
-            response=response_text, req_token=request_tokens, res_token=0
-        )
-        return Response({'user_query': user_query, 'response': response_text, 
-                         'req_token': request_tokens, 'res_token': 0, 
-                         'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        try:
+            chat_entry = ChatHistory.objects.create(
+                user_id=user_id, course_id=course_id, user_query=user_query,
+                response=response_text, req_token=request_tokens, res_token=0
+            )
+            return Response({'user_query': user_query, 'response': response_text, 
+                            'req_token': request_tokens, 'res_token': 0, 
+                            'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        except IntegrityError as e:
+            print(f"Database Error: {str(e)}")
+            return Response({'detail': 'Database error while saving chat history.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     try:
         embeddings = OpenAIEmbeddings(openai_api_key=api_key)
         faiss_db = FAISS.load_local(faiss_index_path, embeddings, allow_dangerous_deserialization=True)
-        retriever = faiss_db.as_retriever(search_kwargs={"k": 5})  # Retrieve more documents to filter properly
+        retriever = faiss_db.as_retriever(search_kwargs={"k": 5})
         retrieved_docs = retriever.invoke(user_query)
 
-        print("Retrieved Documents:", retrieved_docs)  # Debugging
-
-        # Filter documents that belong to the given course_id
         filtered_docs = [doc for doc in retrieved_docs if str(course_id) in doc.metadata.get("source", "")]
 
-        print("Filtered Documents:", filtered_docs)  # Debugging
-
         if not filtered_docs:
-            return Response({"response": "No relevant training data found for this course."}, status=200)
+            response_text = "No relevant training data found for this course."
+            try:
+                chat_entry = ChatHistory.objects.create(
+                    user_id=user_id, course_id=course_id, user_query=user_query,
+                    response=response_text, req_token=request_tokens, res_token=0
+                )
+                return Response({'user_query': user_query, 'response': response_text, 
+                                'req_token': request_tokens, 'res_token': 0, 
+                                'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+            except IntegrityError as e:
+                print(f"Database Error: {str(e)}")
+                return Response({'detail': 'Database error while saving chat history.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        llm = ChatOpenAI(openai_api_key=api_key)
-        qa_chain = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
-        response = qa_chain.invoke({"query": user_query})
-        response_text = response["result"]
+        context_text = "\n".join([doc.page_content for doc in filtered_docs])
 
+        if has_advanced_processing:
+            try:
+                llm = ChatOpenAI(openai_api_key=api_key)
+                optimized_context = llm.invoke(f"Optimize this training data for clarity and conciseness:\n{context_text}")
+                context_text = optimized_context.content.strip() if isinstance(optimized_context, AIMessage) else str(optimized_context).strip()
+            except Exception as e:
+                print(f"Error optimizing training data: {str(e)}")
+
+        try:
+            llm = ChatOpenAI(openai_api_key=api_key)
+
+            # Define the prompt based on query type
+            if query_type == "Question Paper Request":
+                prompt = (
+                    f"Generate a structured question paper for the course '{course_name}' using this course material:\n{context_text}\n\n"
+                    "The question paper should include:\n"
+                    "- **5 Multiple Choice Questions** with 4 answer choices\n"
+                    "- **5 Short Answer Questions**\n"
+                    "- **3 Problem-Solving Exercises**\n\n"
+                    "Format the question paper clearly."
+                )
+            elif query_type == "Question Paper Answer Request":
+                prompt = (
+                    f"Identify the questions from the given text and provide step-by-step solutions.\n\n"
+                    f"Course: {course_name}\n"
+                    f"Question Paper:\n{context_text}\n\n"
+                    f"User Query: {user_query}\n\n"
+                    "Format answers clearly with explanations where necessary."
+                )
+
+            elif query_type == "Concept Explanation":
+                prompt = (
+                    f"Explain the following concept in detail using only the given course material:\n\n"
+                    f"Course: {course_name}\n"
+                    f"Concept: {user_query}\n\n"
+                    "Provide a clear and structured explanation, including examples where possible."
+                )
+            elif query_type == "General Query":
+                prompt = (
+                    f"Use only the following course-related information to answer the question:\n{context_text}\n\n"
+                    f"Question: {user_query}\n\n"
+                    "Provide a precise and informative response."
+                )
+            else:  # Default case (fallback)
+                prompt = (
+                    f"Use only the following course-related information to respond appropriately:\n{context_text}\n\n"
+                    f"User Query: {user_query}"
+                )
+
+            # Debugging log
+            print(f"Final Prompt:\n{prompt[:500]}...")  # Print the first 500 characters for debugging
+
+
+
+            input_tokens = len(enc.encode(prompt))
+            print(f"🔹 Input Tokens (Prompt Size): {input_tokens}")
+
+            if input_tokens > 4096:
+                return Response({'detail': "Input query is too long. Try a shorter query."}, status=status.HTTP_400_BAD_REQUEST)
+
+            refined_response = llm.invoke(prompt)
+            response_text = refined_response.content.strip() if isinstance(refined_response, AIMessage) else str(refined_response).strip()
+
+            if not response_text:
+                response_text = "I'm unable to generate a response for this query."
+
+        except Exception as e:
+            error_message = f"Error processing OpenAI request: {str(e)}"
+            print(error_message)
+            return Response({'detail': error_message}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Normalize response text before storing
+        response_text = clean_text(response_text)
         response_tokens = len(enc.encode(response_text))
-        chat_entry = ChatHistory.objects.create(
-            user_id=user_id, course_id=course_id, user_query=user_query,
-            response=response_text, req_token=request_tokens, res_token=response_tokens
-        )
+        print(f"🔹 Response Tokens (Generated Answer): {response_tokens}")
 
-        return Response({'user_query': user_query, 'response': response_text, 
-                         'req_token': request_tokens, 'res_token': response_tokens, 
-                         'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        # **🔹 Print Total Token Usage**
+        total_tokens = request_tokens + input_tokens + response_tokens
+        print(f"🔥 Total Tokens Used in Query Processing: {total_tokens}")
+
+        try:
+            chat_entry = ChatHistory.objects.create(
+                user_id=user_id, course_id=course_id, user_query=user_query,
+                response=response_text, req_token=request_tokens, res_token=response_tokens,input_prompt_token=input_tokens,total_token=total_tokens
+            )
+            return Response({'user_query': user_query, 'response': response_text, 
+                            'req_token': request_tokens, 'res_token': response_tokens,
+                            'input_prompt_token':input_tokens,'total_token':total_tokens,
+                            'chat_id': chat_entry.id}, status=status.HTTP_200_OK)
+        except IntegrityError as e:
+            print(f"Database Error: {str(e)}")
+            return Response({'detail': 'Database error while saving chat history.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     except Exception as e:
         return Response({'detail': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-
 
 # Chat History API
 @api_view(['GET'])
@@ -320,7 +483,9 @@ def chat_history(request):
             ChatHistory.objects.values('course_id')
             .annotate(
                 total_req_token=Coalesce(Sum('req_token'), Value(0)),
-                total_res_token=Coalesce(Sum('res_token'), Value(0))
+                total_res_token=Coalesce(Sum('res_token'), Value(0)),
+                total_input_prompt_token=Coalesce(Sum('input_prompt_token'), Value(0)),
+                total_token=Coalesce(Sum('total_token'), Value(0))
             )
         )
 
@@ -334,3 +499,19 @@ def chat_history(request):
 
     return Response(ChatHistorySerializer(chat_entries, many=True).data, status=status.HTTP_200_OK)
 
+@api_view(['PATCH'])
+def update_file_type(request, file_id):
+    """API to update the 'type' field in the UploadedFile model."""
+    try:
+        uploaded_file = UploadedFile.objects.get(id=file_id)
+    except UploadedFile.DoesNotExist:
+        return Response({'detail': 'File not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    new_type = request.data.get("type")
+    if new_type not in [0, 1]:
+        return Response({'detail': 'Invalid type. Must be 0 or 1.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    uploaded_file.type = new_type
+    uploaded_file.save()
+
+    return Response({'detail': f'File type updated to {new_type} successfully.'}, status=status.HTTP_200_OK)
