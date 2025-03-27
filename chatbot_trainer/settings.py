@@ -12,7 +12,9 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 
 from pathlib import Path
 import os
-from pathlib import Path
+import sys
+from django.db import connection
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -79,19 +81,44 @@ WSGI_APPLICATION = 'chatbot_trainer.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
+DJANGO_ENV = os.getenv('DJANGO_ENV', 'local')
 
+# Load the correct .env file based on the environment
+if DJANGO_ENV == 'production':
+    dotenv_path = os.path.join(BASE_DIR, '.env.production')
+else:
+    dotenv_path = os.path.join(BASE_DIR, '.env.local')
+
+load_dotenv(dotenv_path)
+
+# Database settings
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': 'chatbot_trainer',
-        'USER': 'ajish',
-        'PASSWORD': 'password',
-        'HOST': 'localhost',
-        'PORT': '3306',
+        'NAME': os.getenv('MYSQL_DATABASE'),
+        'USER': os.getenv('MYSQL_USER'),
+        'PASSWORD': os.getenv('MYSQL_PASSWORD'),
+        'HOST': os.getenv('MYSQL_HOST'),
+        'PORT': os.getenv('MYSQL_PORT'),
     }
 }
 
 
+if 'runserver' in sys.argv or 'shell' in sys.argv:
+    print("\n🔍 Checking Database Connection from settings.py...")
+
+    from django.conf import settings
+    db_settings = settings.DATABASES.get('default', {})
+
+    print("\n🌍 Database Connection Settings:")
+    for key, value in db_settings.items():
+        print(f"{key}: {value}")
+
+    try:
+        connection.ensure_connection()
+        print("\n✅ Database connection successful!")
+    except Exception as e:
+        print(f"\n❌ Database connection failed: {e}")
 
 # Password validation
 # https://docs.djangoproject.com/en/5.1/ref/settings/#auth-password-validators
