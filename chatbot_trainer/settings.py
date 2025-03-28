@@ -27,9 +27,9 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 SECRET_KEY = 'django-insecure-&(yhlhs5phf$55xdv5b%*o@$$$(#&21!9xm^64z(7r=msf0a1('
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = False
+DEBUG = True
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django','chatbot-trainer-755e.onrender.com']
+ALLOWED_HOSTS = ['chatbot-trainer-755e.onrender.com']
 
 CSRF_TRUSTED_ORIGINS = ['https://chatbot-trainer-755e.onrender.com']
 
