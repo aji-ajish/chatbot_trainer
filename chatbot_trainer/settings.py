@@ -29,7 +29,7 @@ SECRET_KEY = 'django-insecure-&(yhlhs5phf$55xdv5b%*o@$$$(#&21!9xm^64z(7r=msf0a1(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django','https://chatbot-trainer-zort.onrender.com']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django','https://chatbot-trainer-755e.onrender.com']
 
 
 # Application definition
