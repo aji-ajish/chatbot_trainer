@@ -29,7 +29,7 @@ SECRET_KEY = 'django-insecure-&(yhlhs5phf$55xdv5b%*o@$$$(#&21!9xm^64z(7r=msf0a1(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django']
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django','https://chatbot-trainer-zort.onrender.com']
 
 
 # Application definition
@@ -81,7 +81,7 @@ WSGI_APPLICATION = 'chatbot_trainer.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.1/ref/settings/#databases
-DJANGO_ENV = os.getenv('DJANGO_ENV', 'local')
+DJANGO_ENV = os.getenv('DJANGO_ENV', 'production')
 
 # Load the correct .env file based on the environment
 if DJANGO_ENV == 'production':
