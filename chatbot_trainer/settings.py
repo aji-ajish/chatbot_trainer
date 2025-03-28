@@ -31,6 +31,7 @@ DEBUG = False
 
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'chatbot_django','chatbot-trainer-755e.onrender.com']
 
+CSRF_TRUSTED_ORIGINS = ['https://chatbot-trainer-755e.onrender.com']
 
 # Application definition
 
