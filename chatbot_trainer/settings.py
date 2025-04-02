@@ -29,9 +29,9 @@ SECRET_KEY = 'django-insecure-&(yhlhs5phf$55xdv5b%*o@$$$(#&21!9xm^64z(7r=msf0a1(
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['chatbot-trainer-755e.onrender.com']
+ALLOWED_HOSTS = ['127.0.0.1','localhost','chatbot-trainer-755e.onrender.com','chatbot.infospica.in']
 
-CSRF_TRUSTED_ORIGINS = ['https://chatbot-trainer-755e.onrender.com']
+CSRF_TRUSTED_ORIGINS = ['https://chatbot-trainer-755e.onrender.com','https://chatbot.infospica.in']
 
 # Application definition
 
@@ -105,7 +105,7 @@ DATABASES = {
 }
 
 
-if 'runserver' in sys.argv or 'shell' in sys.argv:
+if 'runserver' in sys.argv or 'shell' in sys.argv or 'gunicorn' in sys.argv:
     print("\n🔍 Checking Database Connection from settings.py...")
 
     from django.conf import settings

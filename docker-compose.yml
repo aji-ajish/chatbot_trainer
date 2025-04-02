@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  db:
+    image: mysql:8.0
+    container_name: infospica-manager-mysql
+    restart: always
+    command: --port=3306  # ✅ Change MySQL to use port 3307 inside Docker
+    environment:
+      MYSQL_ROOT_PASSWORD: kGyLdf7U9P3BkRQWfXLec8whMF2ULWHVu6xmuringakkaa5cp20umysql
+      MYSQL_DATABASE: chatbotdb
+      MYSQL_USER: root
+      MYSQL_PASSWORD: kGyLdf7U9P3BkRQWfXLec8whMF2ULWHVu6xmuringakkaa5cp20umysql
+    ports:
+      - "3306:3306"  # ✅ Expose MySQL on 3307 (host) → 3307 (container)
+    networks:
+      - app_network
+
+  web:
+    image: infospica/chatbot-dev:1.0
+    container_name: chatbot-app
+    build: .
+    restart: always
+    depends_on:
+      - db
+    ports:
+      - "8888:8888"
+    environment:
+      MYSQL_DATABASE: chatbotdb
+      MYSQL_USER: root
+      MYSQL_PASSWORD: kGyLdf7U9P3BkRQWfXLec8whMF2ULWHVu6xmuringakkaa5cp20umysql
+      MYSQL_HOST: infospica-manager-mysql  # ✅ Use the service name for networking
+      MYSQL_PORT: 3306                      # ✅ Point to MySQL running on 3307
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
