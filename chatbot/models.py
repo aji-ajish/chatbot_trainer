@@ -5,7 +5,7 @@ class UploadedFile(models.Model):
     filename = models.CharField(max_length=255)
     filetype = models.CharField(max_length=255)
     filepath = models.CharField(max_length=255)
-    type = models.BooleanField(default=False)  
+    type = models.BooleanField(default=1)  
     request_token = models.IntegerField()
     response_token = models.IntegerField()
     upload_date = models.DateTimeField(auto_now_add=True)
